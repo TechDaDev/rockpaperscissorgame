@@ -624,9 +624,7 @@ st.markdown('<div class="video-wrapper">', unsafe_allow_html=True)
 
 # More robust ICE configuration
 rtc_config = RTCConfiguration(
-    {"iceServers": [
-        {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"]}
-    ]}
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
 webrtc_streamer(
@@ -634,11 +632,7 @@ webrtc_streamer(
     video_frame_callback=video_frame_callback,
     rtc_configuration=rtc_config,
     media_stream_constraints={
-        "video": {
-            "width": {"ideal": 1280},
-            "height": {"ideal": 720},
-            "frameRate": {"ideal": 30}
-        },
+        "video": True,
         "audio": False
     },
     async_processing=True,
