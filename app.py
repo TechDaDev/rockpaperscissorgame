@@ -457,34 +457,32 @@ def get_move_emoji(move):
 
 
 # ======================
-# VIDEO PROCESSOR
+# GAME ENGINE (Callback Handler)
 # ======================
 
-class RPSProcessor(VideoProcessorBase):
-
-    def __init__(self, shared_state):
+class GameEngine:
+    def __init__(self):
         self.last_time = time.time()
         self.round_time = 3
         self.result_pause = 2
         self.go_timeout = 3.0
         self.detection_delay = 1.0
         self.state = "countdown"
-        self.shared_state = shared_state
         self.p1_final_move = "unknown"
         self.p2_final_move = "unknown"
         self.result_text = ""
         self.detection_start_time = None
 
-    def capture_results(self, current_moves):
+    def capture_results(self, current_moves, shared_state):
         self.p1_final_move = current_moves["left"]
         self.p2_final_move = current_moves["right"]
         winner = decide_winner(self.p1_final_move, self.p2_final_move)
         
-        with self.shared_state.lock:
+        with shared_state.lock:
             if winner == "Player 1":
-                self.shared_state.p1 += 1
+                shared_state.p1 += 1
             elif winner == "Player 2":
-                self.shared_state.p2 += 1
+                shared_state.p2 += 1
         
         self.result_text = f"{winner} Wins!" if "Player" in winner else winner
         self.state = "result"
@@ -492,15 +490,12 @@ class RPSProcessor(VideoProcessorBase):
         self.detection_start_time = None
 
     def draw_premium_text(self, img, text, pos, size, color, thickness=2, glow=True):
-        """Draw text with a subtle glow for a premium high-res look."""
         x, y = pos
         if glow:
-            # Draw a thicker background in the theme color to simulate a glow
             cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, color, thickness+3, cv2.LINE_AA)
-        # Draw the top white text
         cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, (255, 255, 255), thickness, cv2.LINE_AA)
 
-    def recv(self, frame):
+    def process(self, frame):
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
         h, w, _ = img.shape
@@ -513,8 +508,6 @@ class RPSProcessor(VideoProcessorBase):
 
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        
-        # Process EVERY frame for smoothness
         res = detector.detect_for_video(mp_img, int(time.time() * 1000))
 
         current_moves = {"left": "unknown", "right": "unknown"}
@@ -549,11 +542,11 @@ class RPSProcessor(VideoProcessorBase):
                 if self.detection_start_time is None:
                     self.detection_start_time = now
                 if now - self.detection_start_time >= self.detection_delay:
-                    self.capture_results(current_moves)
+                    self.capture_results(current_moves, shared_state)
             
             if elapsed >= self.go_timeout:
                 if self.state == "go":
-                    self.capture_results(current_moves)
+                    self.capture_results(current_moves, shared_state)
 
             # Pulsing GO! Animation
             pulse = abs(np.sin(now * 6)) * 0.4 + 0.6
@@ -580,7 +573,7 @@ class RPSProcessor(VideoProcessorBase):
             cv2.rectangle(img, (px, py), (px+panel_w, py+panel_h), (249, 83, 198), 2, cv2.LINE_AA)
             
             res_color = (0, 255, 100) if "Wins" in self.result_text else (100, 100, 255)
-            self.draw_premium_text(img, self.result_text, (px + 40, py + 90), 2.2, res_color, 4)
+            self.draw_premium_text(img, self.result_text, (px + 40, py + 90), 2.1, res_color, 4)
             self.draw_premium_text(img, f"{self.p1_final_move.upper()} vs {self.p2_final_move.upper()}", 
                                 (px + 40, py + 160), 1.0, (180, 180, 180), 2)
 
@@ -591,26 +584,14 @@ class RPSProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-        # Divider line (gradient effect simulated)
-        cv2.line(img, (w // 2, 0), (w // 2, h), (100, 100, 100), 1)
-        cv2.line(img, (w // 2 - 1, 0), (w // 2 - 1, h), (150, 150, 150), 1)
-        cv2.line(img, (w // 2 + 1, 0), (w // 2 + 1, h), (150, 150, 150), 1)
-        
-        # Player Labels with backgrounds
-        # P1
-        cv2.rectangle(img, (10, 10), (220, 60), (0, 0, 0), -1)
-        cv2.rectangle(img, (10, 10), (220, 60), (255, 210, 0), 2)
-        cv2.putText(img, f"P1: {current_moves['left'].upper()}", (20, 45), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 210, 0), 2)
-        
-        # P2
-        cv2.rectangle(img, (w // 2 + 10, 10), (w // 2 + 220, 60), (0, 0, 0), -1)
-        cv2.rectangle(img, (w // 2 + 10, 10), (w // 2 + 220, 60), (249, 83, 198), 2)
-        cv2.putText(img, f"P2: {current_moves['right'].upper()}", (w // 2 + 20, 45), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (249, 83, 198), 2)
+# Persistent engine
+if "game_engine" not in st.session_state:
+    st.session_state.game_engine = GameEngine()
 
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+engine = st.session_state.game_engine
 
+def video_frame_callback(frame):
+    return engine.process(frame)
 
 # ======================
 # UI LAYOUT
@@ -650,7 +631,7 @@ rtc_config = RTCConfiguration(
 
 webrtc_streamer(
     key="rps",
-    video_processor_factory=lambda: RPSProcessor(shared_state),
+    video_frame_callback=video_frame_callback,
     rtc_configuration=rtc_config,
     media_stream_constraints={
         "video": {
@@ -661,7 +642,6 @@ webrtc_streamer(
         "audio": False
     },
     async_processing=True,
-    sendback_audio=False,
 )
 st.markdown('</div>', unsafe_allow_html=True)
 
